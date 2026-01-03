@@ -147,20 +147,28 @@ def get_anomaly_detection_loaders(
     train_ad_dataset = AnomalyDetectionDataset(train_dataset, normal_class, train=True)
     test_ad_dataset = AnomalyDetectionDataset(test_dataset, normal_class, train=False)
     
+    use_cuda = torch.cuda.is_available()
+    
     train_loader = DataLoader(
         train_ad_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=num_workers,
-        pin_memory=True
+        num_workers=2 if use_cuda else 0,
+        pin_memory=use_cuda,
+        persistent_workers=use_cuda,      # solo con num_workers>0
+        prefetch_factor=2 if use_cuda else None
     )
+    
+    use_cuda = torch.cuda.is_available()
     
     test_loader = DataLoader(
         test_ad_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True
+        num_workers=2 if use_cuda else 0,
+        pin_memory=use_cuda,
+        persistent_workers=use_cuda,
+        prefetch_factor=2 if use_cuda else None
     )
     
     return train_loader, test_loader
@@ -183,20 +191,28 @@ def get_standard_loaders(
     else:
         raise ValueError(f"Unknown dataset: {dataset_name}")
     
+    use_cuda = torch.cuda.is_available()
+    
     train_loader = DataLoader(
-        train_dataset,
+        train_ad_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=num_workers,
-        pin_memory=True
+        num_workers=2 if use_cuda else 0,
+        pin_memory=use_cuda,
+        persistent_workers=use_cuda,      # solo con num_workers>0
+        prefetch_factor=2 if use_cuda else None
     )
     
+    use_cuda = torch.cuda.is_available()
+    
     test_loader = DataLoader(
-        test_dataset,
+        test_ad_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True
+        num_workers=2 if use_cuda else 0,
+        pin_memory=use_cuda,
+        persistent_workers=use_cuda,
+        prefetch_factor=2 if use_cuda else None
     )
     
     return train_loader, test_loader
@@ -227,20 +243,28 @@ def get_conditional_data(
     else:
         raise ValueError(f"Unknown dataset: {dataset_name}")
     
+    use_cuda = torch.cuda.is_available()
+    
     train_loader = DataLoader(
-        train_dataset,
+        train_ad_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=num_workers,
-        pin_memory=True
+        num_workers=2 if use_cuda else 0,
+        pin_memory=use_cuda,
+        persistent_workers=use_cuda,      # solo con num_workers>0
+        prefetch_factor=2 if use_cuda else None
     )
     
+    use_cuda = torch.cuda.is_available()
+    
     test_loader = DataLoader(
-        test_dataset,
+        test_ad_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True
+        num_workers=2 if use_cuda else 0,
+        pin_memory=use_cuda,
+        persistent_workers=use_cuda,
+        prefetch_factor=2 if use_cuda else None
     )
     
     return train_loader, test_loader
