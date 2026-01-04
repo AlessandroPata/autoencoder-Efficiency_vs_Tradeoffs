@@ -105,69 +105,76 @@ def compute_reconstruction_error(
     return np.array(all_scores), np.array(all_labels)
 
 
-def evaluate_anomaly_detection(
-    scores: np.ndarray,
-    labels: np.ndarray
-) -> Dict:
+def evaluate_anomaly_detection(scores: np.ndarray, labels: np.ndarray) -> Dict:
     """
-    Evaluate anomaly detection performance.
-    
-    Args:
-        scores: Anomaly scores (higher = more anomalous)
-        labels: Ground truth labels (0=normal, 1=anomaly)
-        
-    Returns:
-        Dictionary with all metrics
+    Paper-style evaluation:
+    - labels input: 0=normal, 1=anomaly  (come ora)
+    - scores input: higher = more anomalous (come ora)
+    Paper convention:
+    - positive class = NORMAL
+    - higher score = more NORMAL
     """
-    # ROC-AUC
-    roc_auc = roc_auc_score(labels, scores)
-    
-    # Average Precision
-    ap = average_precision_score(labels, scores)
-    
-    # ROC curve
-    fpr, tpr, roc_thresholds = roc_curve(labels, scores)
-    
-    # Precision-Recall curve
-    precision, recall, pr_thresholds = precision_recall_curve(labels, scores)
-    
-    # Find optimal threshold using F1 score
-    best_f1 = 0
-    best_threshold = 0
-    for threshold in np.percentile(scores, np.linspace(0, 100, 100)):
-        pred_labels = (scores >= threshold).astype(int)
-        f1 = f1_score(labels, pred_labels, zero_division=0)
+    # Paper labels: 1=normal (positive), 0=anomaly
+    y_true = (labels == 0).astype(int)
+
+    # Paper scores: higher = more normal
+    y_score = -scores
+
+    # ROC-AUC / AP (paper-style)
+    roc_auc = roc_auc_score(y_true, y_score)
+    ap = average_precision_score(y_true, y_score)
+
+    # Curves (paper-style)
+    fpr, tpr, roc_thresholds = roc_curve(y_true, y_score)
+    precision, recall, pr_thresholds = precision_recall_curve(y_true, y_score)
+
+    # Threshold search (paper-style): predict NORMAL as 1 when score >= threshold
+    best_f1 = 0.0
+    best_threshold = float(np.median(y_score))
+    for threshold in np.percentile(y_score, np.linspace(0, 100, 100)):
+        pred_labels = (y_score >= threshold).astype(int)  # 1=normal
+        f1 = f1_score(y_true, pred_labels, zero_division=0)
         if f1 > best_f1:
             best_f1 = f1
-            best_threshold = threshold
-    
-    # Get metrics at optimal threshold
-    pred_labels = (scores >= best_threshold).astype(int)
-    precision_at_threshold = precision_score(labels, pred_labels, zero_division=0)
-    recall_at_threshold = recall_score(labels, pred_labels, zero_division=0)
-    
-    # Confusion matrix
-    tn, fp, fn, tp = confusion_matrix(labels, pred_labels).ravel()
-    
+            best_threshold = float(threshold)
+
+    # Metrics at optimal threshold (paper-style)
+    pred_labels = (y_score >= best_threshold).astype(int)  # 1=normal
+    precision_at_threshold = precision_score(y_true, pred_labels, zero_division=0)
+    recall_at_threshold = recall_score(y_true, pred_labels, zero_division=0)
+
+    tn, fp, fn, tp = confusion_matrix(y_true, pred_labels).ravel()
+
+    # Stats: qui ti lascio entrambe le viste per chiarezza
     return {
-        'roc_auc': roc_auc,
-        'ap': ap,
-        'f1': best_f1,
-        'precision': precision_at_threshold,
-        'recall': recall_at_threshold,
-        'optimal_threshold': best_threshold,
+        'roc_auc': float(roc_auc),
+        'ap': float(ap),
+        'f1': float(best_f1),
+        'precision': float(precision_at_threshold),
+        'recall': float(recall_at_threshold),
+        'optimal_threshold': float(best_threshold),
+
+        # curves
         'fpr': fpr.tolist(),
         'tpr': tpr.tolist(),
         'precision_curve': precision.tolist(),
         'recall_curve': recall.tolist(),
-        'true_positives': int(tp),
-        'true_negatives': int(tn),
-        'false_positives': int(fp),
-        'false_negatives': int(fn),
+
+        # confusion matrix (positive = normal)
+        'true_positives': int(tp),    # predicted normal & actually normal
+        'true_negatives': int(tn),    # predicted anomaly & actually anomaly
+        'false_positives': int(fp),   # predicted normal but actually anomaly
+        'false_negatives': int(fn),   # predicted anomaly but actually normal
+
+        # original score stats (higher=more anomalous)
         'normal_scores_mean': float(np.mean(scores[labels == 0])),
         'normal_scores_std': float(np.std(scores[labels == 0])),
         'anomaly_scores_mean': float(np.mean(scores[labels == 1])),
         'anomaly_scores_std': float(np.std(scores[labels == 1])),
+
+        # paper-oriented score stats (higher=more normal)
+        'paper_normal_scores_mean': float(np.mean(y_score[y_true == 1])),
+        'paper_anomaly_scores_mean': float(np.mean(y_score[y_true == 0])),
     }
 
 

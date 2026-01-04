@@ -304,75 +304,106 @@ def evaluate_model(
     normal_class: int = 0,
     device: torch.device = DEVICE
 ) -> Dict:
-    """
-    Evaluate model for anomaly detection.
-    
-    Args:
-        model: Trained model
-        model_name: Name of the model
-        test_loader: Test data loader
-        normal_class: Normal class index
-        device: Device for evaluation
-        
-    Returns:
-        Evaluation results
-    """
     from sklearn.metrics import roc_auc_score, average_precision_score, f1_score
-    
+
     model = model.to(device)
     model.eval()
-    
+
     all_scores = []
-    all_labels = []
-    
+    all_ytrue = []
+
     with torch.no_grad():
         for data, labels in tqdm(test_loader, desc='Evaluating'):
             data = data.to(device)
+            labels = labels.to(device)
             batch_size = data.size(0)
-            
-            # Get reconstruction
+
+            # forward
             if model_name == 'cvae':
-                outputs = model(data, labels.long().to(device))
+                outputs = model(data, labels.long())
             else:
                 outputs = model(data)
-            
+
             if isinstance(outputs, dict):
                 recon = outputs.get('recon', outputs.get('reconstruction'))
             elif isinstance(outputs, tuple):
                 recon = outputs[1] if len(outputs) > 1 else outputs[0]
             else:
                 recon = outputs
+
+            # recon error (anomaly-style: higher = more anomalous)
             
-            # Compute reconstruction error
             data_flat = data.view(batch_size, -1)
             recon_flat = recon.view(batch_size, -1)
-            scores = torch.mean((data_flat - recon_flat) ** 2, dim=1)
-            
-            all_scores.extend(scores.cpu().numpy())
-            all_labels.extend(labels.numpy())
-    
+
+            # reconstruction error (per-sample)
+            recon_err = torch.mean((data_flat - recon_flat) ** 2, dim=1)
+
+            # ========== PAPER-ALIGNED SCORE ==========
+            # default: AE-style (normal positivo)
+            score_normal = -recon_err
+
+              # VAE / beta-VAE / CVAE / ADVAE / IWAE → negative ELBO
+            if model_name in ("vae", "beta_vae", "cvae", "advae", "iwae"):
+              kl = None
+
+              if isinstance(outputs, dict):
+                kl = outputs.get("kl_per_sample", None)
+                mu = outputs.get("mu", None)
+                logvar = outputs.get("logvar", None)
+              else:
+                mu = logvar = None
+
+              if kl is None and mu is not None and logvar is not None:
+                kl = 0.5 * (mu.pow(2) + logvar.exp() - 1.0 - logvar).sum(dim=1)
+              elif kl is None:
+                kl = torch.zeros_like(recon_err)
+
+              beta = getattr(model, "beta", 1.0)
+              total = recon_err + beta * kl
+              score_normal = -total
+
+            # SAE → recon + sparsity
+            elif model_name == "sae":
+              if isinstance(outputs, dict) and "h" in outputs:
+                h = outputs["h"]
+                l1 = h.abs().view(h.size(0), -1).mean(dim=1)
+              else:
+                l1 = torch.zeros_like(recon_err)
+
+              lam = getattr(model, "lambda_sparsity", 1e-3)
+              total = recon_err + lam * l1
+              score_normal = -total
+
+              # CAE → recon + contractive penalty (placeholder se non implementato)
+            elif model_name == "cae":
+              jac = torch.zeros_like(recon_err)  # TODO: vero Jacobian se vuoi match perfetto
+              lam = getattr(model, "lambda_contractive", 1e-3)
+              total = recon_err + lam * jac
+              score_normal = -total
+
+# labels: 1 = normal, 0 = anomaly
+            y_true = (labels == normal_class).long()
+
+            all_scores.extend(score_normal.detach().cpu().numpy())
+            all_labels.extend(y_true.detach().cpu().numpy())
+            y_true = (labels == normal_class).long()
+
     scores = np.array(all_scores)
-    labels = np.array(all_labels)
-    
-    # Compute metrics
-    roc_auc = roc_auc_score(labels, scores)
-    ap = average_precision_score(labels, scores)
-    
-    # Find optimal threshold
-    best_f1 = 0
-    for threshold in np.percentile(scores, np.linspace(0, 100, 100)):
-        pred = (scores >= threshold).astype(int)
-        f1 = f1_score(labels, pred, zero_division=0)
-        if f1 > best_f1:
-            best_f1 = f1
-    
-    return {
-        'roc_auc': roc_auc,
-        'ap': ap,
-        'f1': best_f1,
-        'scores': scores,
-        'labels': labels
-    }
+    y_true = np.array(all_ytrue)
+
+
+    roc_auc = roc_auc_score(y_true, scores)
+    ap = average_precision_score(y_true, scores)
+
+    # threshold on "normal score": pred_normal = 1 if score >= thr
+    best_f1 = 0.0
+    for thr in np.percentile(scores, np.linspace(0, 100, 100)):
+        pred = (scores >= thr).astype(int)  # 1=normal
+        f1 = f1_score(y_true, pred, zero_division=0)
+        best_f1 = max(best_f1, f1)
+
+    return {'roc_auc': roc_auc, 'ap': ap, 'f1': best_f1, 'scores': scores, 'labels': y_true}
 
 
 def run_experiment(
