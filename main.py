@@ -1,54 +1,7 @@
 #!/usr/bin/env python3
 """
-================================================================================
 Main Script - Auto-Encoder Anomaly Detection Study
-================================================================================
 Paper: "A comprehensive study of auto-encoders for anomaly detection"
-Authors: Asif Ahmed Neloy, Maxime Turgeon
-Journal: Machine Learning with Applications
-
-Run Commands:
-    # Train and evaluate all models on MNIST
-    python main.py --dataset mnist --all
-
-    # Train and evaluate all models on Fashion-MNIST
-    python main.py --dataset fashion_mnist --all
-
-    # Train a specific model
-    python main.py --dataset mnist --model vae --epochs 50
-
-    # Train multiple specific models
-    python main.py --dataset mnist --models vae beta_vae advae
-
-    # Quick test run (reduced epochs)
-    python main.py --dataset mnist --model vae --epochs 5 --quick
-
-    # Generate visualizations
-    python main.py --dataset mnist --all --visualize
-
-Description:
-    Trains and evaluates 11 auto-encoder architectures for anomaly detection:
-    - DAE  (Denoising Auto-Encoder)
-    - SAE  (Sparse Auto-Encoder)
-    - CAE  (Contractive Auto-Encoder)
-    - VAE  (Variational Auto-Encoder)
-    - β-VAE (Beta-VAE)
-    - adVAE (Self-Adversarial VAE)
-    - CVAE (Conditional VAE)
-    - VQ-VAE (Vector Quantized VAE)
-    - IWAE (Importance Weighted Auto-Encoder)
-    - PAE  (Probabilistic Auto-Encoder)
-    - RDA  (Robust Deep Auto-Encoder)
-
-Expected Results (Table 3 from paper):
-    MNIST ROC-AUC:
-        CAE: 0.22, VAE: 0.61, VQ-VAE: 0.82, RDA: 0.82, CVAE: 0.80
-        SAE: 0.83, DAE: 0.73, β-VAE: 0.87, PAE: 0.89, IWAE: 0.87, adVAE: 0.93
-    
-    Fashion-MNIST ROC-AUC:
-        CAE: 0.22, VAE: 0.56, VQ-VAE: 0.56, RDA: 0.60, CVAE: 0.66
-        SAE: 0.66, DAE: 0.56, β-VAE: 0.59, PAE: 0.64, IWAE: 0.57, adVAE: 0.87
-================================================================================
 """
 
 import os
@@ -56,28 +9,21 @@ import sys
 import json
 import time
 import argparse
-from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-import numpy as np
 from tqdm import tqdm
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from configs.config import (
-    DEVICE, TRAINING_CONFIG, MODEL_CONFIGS,
-    EXPECTED_RESULTS, DATASET_CONFIG
-)
-from utils.data_loader import (
-    get_anomaly_detection_loaders,
-    get_standard_loaders
-)
+from configs.config import DEVICE, MODEL_CONFIGS, EXPECTED_RESULTS
+from utils.data_loader import get_anomaly_detection_loaders
 
 # Import all models
 from models.dae import DAE
@@ -91,218 +37,305 @@ from models.vqvae import VQVAE
 from models.others import IWAE, PAE, RDA
 
 
-# Model registry
 MODEL_CLASSES = {
-    'dae': DAE,
-    'sae': SAE,
-    'cae': CAE,
-    'vae': VAE,
-    'beta_vae': BetaVAE,
-    'advae': AdVAE,
-    'cvae': CVAE,
-    'vqvae': VQVAE,
-    'iwae': IWAE,
-    'pae': PAE,
-    'rda': RDA,
+    "dae": DAE,
+    "sae": SAE,
+    "cae": CAE,
+    "vae": VAE,
+    "beta_vae": BetaVAE,
+    "advae": AdVAE,
+    "cvae": CVAE,
+    "vqvae": VQVAE,
+    "iwae": IWAE,
+    "pae": PAE,
+    "rda": RDA,
 }
-
 ALL_MODELS = list(MODEL_CLASSES.keys())
 
 
-def create_model(model_name: str, **kwargs) -> nn.Module:
-    """
-    Create an auto-encoder model.
-    
-    Args:
-        model_name: Name of the model
-        **kwargs: Additional parameters to override defaults
-        
-    Returns:
-        Instantiated model
-    """
+# -------------------------
+# Model construction
+# -------------------------
+def create_model(model_name: str) -> nn.Module:
     if model_name not in MODEL_CLASSES:
         raise ValueError(f"Unknown model: {model_name}. Available: {ALL_MODELS}")
-    
-    config = MODEL_CONFIGS.get(model_name, {}).copy()
-    config.update(kwargs)
-    
-    model_class = MODEL_CLASSES[model_name]
-    
-    # Model-specific instantiation
-    if model_name == 'dae':
-        model = model_class(
-            input_dim=784,
-            hidden_dims=config.get('hidden_dims', [512, 256, 128]),
-            latent_dim=config.get('latent_dim', 32),
-            noise_factor=config.get('noise_factor', 0.27)
+
+    cfg = MODEL_CONFIGS.get(model_name, {}).copy()
+    cls = MODEL_CLASSES[model_name]
+
+    # Keep your explicit defaults (paper-ish), but allow config override
+    if model_name in ("dae", "sae", "cae", "vae", "beta_vae", "advae", "cvae", "iwae", "pae", "rda"):
+        input_dim = cfg.get("input_dim", 784)
+        hidden_dims = cfg.get("hidden_dims", [512, 256, 128])
+
+    if model_name == "dae":
+        return cls(
+            input_dim=input_dim,
+            hidden_dims=hidden_dims,
+            latent_dim=cfg.get("latent_dim", 32),
+            noise_factor=cfg.get("noise_factor", 0.20),  # start at 20%, schedule will raise to 52%
         )
-    elif model_name == 'sae':
-        model = model_class(
-            input_dim=784,
-            hidden_dims=config.get('hidden_dims', [512, 256, 128]),
-            latent_dim=config.get('latent_dim', 32),
-            sparsity_weight=config.get('sparsity_weight', 1e-3),
-            sparsity_target=config.get('sparsity_target', 0.45)
+
+    if model_name == "sae":
+        return cls(
+            input_dim=input_dim,
+            hidden_dims=hidden_dims,
+            latent_dim=cfg.get("latent_dim", 32),
+            sparsity_weight=cfg.get("sparsity_weight", 1e-3),
+            sparsity_target=cfg.get("sparsity_target", 0.45),
         )
-    elif model_name == 'cae':
-        model = model_class(
-            input_dim=784,
-            hidden_dims=config.get('hidden_dims', [512, 256, 128]),
-            latent_dim=config.get('latent_dim', 32),
-            lambda_=config.get('lambda_', 1e-4)
+
+    if model_name == "cae":
+        return cls(
+            input_dim=input_dim,
+            hidden_dims=hidden_dims,
+            latent_dim=cfg.get("latent_dim", 32),
+            lambda_=cfg.get("lambda_", 1e-4),
         )
-    elif model_name == 'vae':
-        model = model_class(
-            input_dim=784,
-            hidden_dims=config.get('hidden_dims', [512, 256, 128]),
-            latent_dim=config.get('latent_dim', 2),
-            kl_weight=config.get('kl_weight', 1.0)
+
+    if model_name == "vae":
+        return cls(
+            input_dim=input_dim,
+            hidden_dims=hidden_dims,
+            latent_dim=cfg.get("latent_dim", 2),
+            kl_weight=cfg.get("kl_weight", 1.0),
         )
-    elif model_name == 'beta_vae':
-        model = model_class(
-            input_dim=784,
-            hidden_dims=config.get('hidden_dims', [512, 256, 128]),
-            latent_dim=config.get('latent_dim', 2),
-            beta=config.get('beta', 1.5)
+
+    if model_name == "beta_vae":
+        return cls(
+            input_dim=input_dim,
+            hidden_dims=hidden_dims,
+            latent_dim=cfg.get("latent_dim", 2),
+            beta=cfg.get("beta", 1.5),
         )
-    elif model_name == 'advae':
-        model = model_class(
-            input_dim=784,
-            hidden_dims=config.get('hidden_dims', [512, 256, 128]),
-            latent_dim=config.get('latent_dim', 2)
+
+    if model_name == "advae":
+        # NOTE: matching paper requires the *training procedure* (two-step + T) in the trainer/model
+        return cls(
+            input_dim=input_dim,
+            hidden_dims=hidden_dims,
+            latent_dim=cfg.get("latent_dim", 2),
+            **{k: v for k, v in cfg.items() if k not in {"input_dim", "hidden_dims", "latent_dim"}}
         )
-    elif model_name == 'cvae':
-        model = model_class(
-            input_dim=784,
-            hidden_dims=config.get('hidden_dims', [512, 256, 128]),
-            latent_dim=config.get('latent_dim', 2),
-            num_classes=config.get('num_classes', 10)
+
+    if model_name == "cvae":
+        return cls(
+            input_dim=input_dim,
+            hidden_dims=hidden_dims,
+            latent_dim=cfg.get("latent_dim", 2),
+            num_classes=cfg.get("num_classes", 10),
         )
-    elif model_name == 'vqvae':
-        model = model_class(
-            in_channels=1,
-            hidden_dims=config.get('hidden_dims', [128, 256]),
-            num_embeddings=config.get('num_embeddings', 512),
-            embedding_dim=config.get('embedding_dim', 64),
-            commitment_cost=config.get('commitment_cost', 0.25)
+
+    if model_name == "vqvae":
+        return cls(
+            in_channels=cfg.get("in_channels", 1),
+            hidden_dims=cfg.get("hidden_dims", [128, 256]),
+            num_embeddings=cfg.get("num_embeddings", 512),
+            embedding_dim=cfg.get("embedding_dim", 64),
+            commitment_cost=cfg.get("commitment_cost", 0.25),
         )
-    elif model_name == 'iwae':
-        model = model_class(
-            input_dim=784,
-            hidden_dims=config.get('hidden_dims', [512, 256, 128]),
-            latent_dim=config.get('latent_dim', 2),
-            num_samples=config.get('num_samples', 50)
+
+    if model_name == "iwae":
+        return cls(
+            input_dim=input_dim,
+            hidden_dims=hidden_dims,
+            latent_dim=cfg.get("latent_dim", 2),
+            num_samples=cfg.get("num_samples", 50),
         )
-    elif model_name == 'pae':
-        model = model_class(
-            input_dim=784,
-            hidden_dims=config.get('hidden_dims', [512, 256, 128]),
-            latent_dim=config.get('latent_dim', 2),
-            beta=config.get('beta', 1.0),
-            C=config.get('C', 0.5)
+
+    if model_name == "pae":
+        return cls(
+            input_dim=input_dim,
+            hidden_dims=hidden_dims,
+            latent_dim=cfg.get("latent_dim", 2),
+            beta=cfg.get("beta", 1.0),
+            C=cfg.get("C", 0.5),
         )
-    elif model_name == 'rda':
-        model = model_class(
-            input_dim=784,
-            hidden_dims=config.get('hidden_dims', [512, 256, 128]),
-            latent_dim=config.get('latent_dim', 32),
-            lambda_=config.get('lambda_', 1e-3)
+
+    if model_name == "rda":
+        return cls(
+            input_dim=input_dim,
+            hidden_dims=hidden_dims,
+            latent_dim=cfg.get("latent_dim", 32),
+            lambda_=cfg.get("lambda_", 1e-3),
         )
+
+    return cls(**cfg)
+
+
+# -------------------------
+# Helpers: score aligned to paper
+# -------------------------
+def _recon_per_sample(x: torch.Tensor, recon: torch.Tensor) -> torch.Tensor:
+    """
+    Per-sample MSE recon error. Handles cases where recon batch != x batch (e.g., IWAE K*B).
+    Returns: tensor [B]
+    """
+    b = x.size(0)
+    x_flat = x.view(b, -1)
+
+    recon_flat = recon.view(recon.size(0), -1)
+
+    # If recon is (K*B, D), fold back to (B, K, D) and average recon error over K
+    if recon_flat.size(0) != b:
+        if recon_flat.size(0) % b != 0:
+            raise RuntimeError(f"Recon batch {recon_flat.size(0)} not compatible with B={b}")
+        k = recon_flat.size(0) // b
+        recon_flat = recon_flat.view(b, k, -1)
+        x_rep = x_flat.unsqueeze(1).expand(b, k, x_flat.size(1))
+        mse = torch.mean((x_rep - recon_flat) ** 2, dim=2)  # [B, K]
+        return mse.mean(dim=1)  # [B]
+
+    return torch.mean((x_flat - recon_flat) ** 2, dim=1)
+
+
+def _kl_from_mu_logvar(mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
+    # KL(q(z|x) || N(0,1)) per-sample
+    return 0.5 * (mu.pow(2) + logvar.exp() - 1.0 - logvar).sum(dim=1)
+
+
+def compute_score_per_sample(model: nn.Module, model_name: str, x: torch.Tensor, outputs) -> torch.Tensor:
+    """
+    Paper-aligned score: higher => more normal (normal is positive class).
+    Default: score = -(recon error).
+    VAE-like: score = -(recon + beta*KL).
+    SAE: score = -(recon + lambda*L1(h)) if h exists.
+    CAE: score = -(recon + lambda*penalty) if penalty exists (otherwise just recon).
+    """
+    # Extract recon
+    if isinstance(outputs, dict):
+        recon = outputs.get("recon", outputs.get("reconstruction", None))
+    elif isinstance(outputs, tuple):
+        # common patterns: (loss, recon, ...)
+        recon = outputs[1] if len(outputs) > 1 else outputs[0]
     else:
-        model = model_class(**config)
-    
-    return model
+        recon = outputs
+
+    recon_err = _recon_per_sample(x, recon)
+    score = -recon_err
+
+    # VAE family: recon + beta*KL
+    if model_name in ("vae", "beta_vae", "cvae", "advae", "iwae"):
+        kl = None
+        beta = float(getattr(model, "beta", 1.0))
+
+        if isinstance(outputs, dict):
+            kl = outputs.get("kl_per_sample", None)
+            mu = outputs.get("mu", None)
+            logvar = outputs.get("logvar", None)
+        else:
+            mu = logvar = None
+
+        if kl is None and (mu is not None) and (logvar is not None):
+            kl = _kl_from_mu_logvar(mu, logvar)
+        if kl is None:
+            kl = torch.zeros_like(recon_err)
+
+        total = recon_err + beta * kl
+        score = -total
+
+    elif model_name == "sae":
+        lam = float(getattr(model, "lambda_sparsity", getattr(model, "sparsity_weight", 1e-3)))
+        l1 = torch.zeros_like(recon_err)
+        if isinstance(outputs, dict):
+            h = outputs.get("h", None)
+            if h is not None:
+                l1 = h.abs().view(h.size(0), -1).mean(dim=1)
+        score = -(recon_err + lam * l1)
+
+    elif model_name == "cae":
+        lam = float(getattr(model, "lambda_contractive", getattr(model, "lambda_", 1e-4)))
+        penalty = torch.zeros_like(recon_err)
+        if isinstance(outputs, dict):
+            penalty = outputs.get("contractive_per_sample", outputs.get("penalty_per_sample", penalty))
+        score = -(recon_err + lam * penalty)
+
+    # others (dae, vqvae, pae, rda) -> recon only (paper table uses recon-style scoring)
+    return score
 
 
+# -------------------------
+# Train / Evaluate
+# -------------------------
 def train_model(
     model: nn.Module,
     model_name: str,
     train_loader: DataLoader,
-    epochs: int = 50,
-    lr: float = 1e-3,
-    device: torch.device = DEVICE,
-    verbose: bool = True
+    epochs: int,
+    lr: float,
+    device: torch.device,
+    verbose: bool,
 ) -> Dict:
-    """
-    Train an auto-encoder model.
-    
-    Args:
-        model: Model to train
-        model_name: Name of the model
-        train_loader: Training data loader
-        epochs: Number of training epochs
-        lr: Learning rate
-        device: Device for training
-        verbose: Print progress
-        
-    Returns:
-        Training history
-    """
     model = model.to(device)
     model.train()
-    
+
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
-    
-    history = {'loss': [], 'epoch_times': []}
-    start_time = time.time()
-    
+    history = {"loss": [], "epoch_times": []}
+    t0 = time.time()
+
+    # DAE noise schedule: 20% -> 52% (linear over epochs)
+    dae_noise_start = 0.20
+    dae_noise_end = 0.52
+
     for epoch in range(epochs):
-        epoch_start = time.time()
+        ep_t0 = time.time()
         total_loss = 0.0
-        num_batches = 0
-        
-        pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{epochs}', disable=not verbose)
-        
-        for batch_idx, (data, labels) in enumerate(pbar):
+        n = 0
+
+        # apply DAE noise schedule (if model supports it)
+        if model_name == "dae":
+            noise = dae_noise_start + (dae_noise_end - dae_noise_start) * (epoch / max(1, epochs - 1))
+            if hasattr(model, "noise_factor"):
+                model.noise_factor = float(noise)
+            if hasattr(model, "set_noise_factor"):
+                model.set_noise_factor(float(noise))
+
+        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}", disable=not verbose)
+        for data, labels in pbar:
             data = data.to(device)
             labels = labels.to(device)
-            
+
             optimizer.zero_grad()
-            
-            # Forward pass based on model type
-            if model_name == 'cvae':
+
+            # forward
+            if model_name == "cvae":
                 outputs = model(data, labels.long())
             else:
                 outputs = model(data)
-            
-            # Compute loss
-            if isinstance(outputs, dict):
-                losses = model.loss_function(data, outputs)
-                loss = losses['loss']
+
+            # loss
+            if isinstance(outputs, dict) and hasattr(model, "loss_function"):
+                loss_dict = model.loss_function(data, outputs)
+                loss = loss_dict["loss"] if isinstance(loss_dict, dict) else loss_dict
             elif isinstance(outputs, tuple):
                 loss = outputs[0]
             else:
-                loss = F.mse_loss(outputs, data.view(data.size(0), -1))
-            
+                # fallback: plain AE recon
+                recon = outputs
+                loss = F.mse_loss(recon, data.view(data.size(0), -1))
+
             loss.backward()
             optimizer.step()
-            
-            total_loss += loss.item()
-            num_batches += 1
-            
+
+            total_loss += float(loss.item())
+            n += 1
             if verbose:
-                pbar.set_postfix({'loss': total_loss / num_batches})
-        
-        epoch_loss = total_loss / num_batches
-        epoch_time = time.time() - epoch_start
-        
-        history['loss'].append(epoch_loss)
-        history['epoch_times'].append(epoch_time)
-        
-        if verbose and (epoch + 1) % 10 == 0:
-            print(f"Epoch {epoch+1}/{epochs} - Loss: {epoch_loss:.4f} - Time: {epoch_time:.1f}s")
-    
-    history['total_time'] = time.time() - start_time
-    
+                pbar.set_postfix(loss=(total_loss / n))
+
+        history["loss"].append(total_loss / max(1, n))
+        history["epoch_times"].append(time.time() - ep_t0)
+
+    history["total_time"] = time.time() - t0
     return history
 
 
+@torch.no_grad()
 def evaluate_model(
     model: nn.Module,
     model_name: str,
     test_loader: DataLoader,
-    normal_class: int = 0,
-    device: torch.device = DEVICE
+    normal_class: int,
+    device: torch.device,
 ) -> Dict:
     from sklearn.metrics import roc_auc_score, average_precision_score, f1_score
 
@@ -312,87 +345,24 @@ def evaluate_model(
     all_scores = []
     all_ytrue = []
 
-    with torch.no_grad():
-        for data, labels in tqdm(test_loader, desc='Evaluating'):
-            data = data.to(device)
-            labels = labels.to(device)
-            batch_size = data.size(0)
+    for data, labels in tqdm(test_loader, desc="Evaluating"):
+        data = data.to(device)
+        labels = labels.to(device)
 
-            # forward
-            if model_name == 'cvae':
-                outputs = model(data, labels.long())
-            else:
-                outputs = model(data)
+        # forward
+        if model_name == "cvae":
+            outputs = model(data, labels.long())
+        else:
+            outputs = model(data)
 
-            if isinstance(outputs, dict):
-                recon = outputs.get('recon', outputs.get('reconstruction'))
-            elif isinstance(outputs, tuple):
-                recon = outputs[1] if len(outputs) > 1 else outputs[0]
-            else:
-                recon = outputs
+        score = compute_score_per_sample(model, model_name, data, outputs)  # higher = more normal
+        y_true = (labels == normal_class).long()  # 1 normal, 0 anomaly
 
-            # recon error (anomaly-style: higher = more anomalous)
-            
-            data_flat = data.view(batch_size, -1)
-            recon_flat = recon.view(batch_size, -1)
+        all_scores.append(score.detach().cpu().numpy())
+        all_ytrue.append(y_true.detach().cpu().numpy())
 
-            # reconstruction error (per-sample)
-            score = self.compute_score_per_sample(self.model_name, outputs, data, recon)
-
-
-            # ========== PAPER-ALIGNED SCORE ==========
-            # default: AE-style (normal positivo)
-            score_normal = -recon_err
-
-              # VAE / beta-VAE / CVAE / ADVAE / IWAE → negative ELBO
-            if model_name in ("vae", "beta_vae", "cvae", "advae", "iwae"):
-              kl = None
-
-              if isinstance(outputs, dict):
-                kl = outputs.get("kl_per_sample", None)
-                mu = outputs.get("mu", None)
-                logvar = outputs.get("logvar", None)
-              else:
-                mu = logvar = None
-
-              if kl is None and mu is not None and logvar is not None:
-                kl = 0.5 * (mu.pow(2) + logvar.exp() - 1.0 - logvar).sum(dim=1)
-              elif kl is None:
-                kl = torch.zeros_like(recon_err)
-
-              beta = getattr(model, "beta", 1.0)
-              total = recon_err + beta * kl
-              score_normal = -total
-
-            # SAE → recon + sparsity
-            elif model_name == "sae":
-              if isinstance(outputs, dict) and "h" in outputs:
-                h = outputs["h"]
-                l1 = h.abs().view(h.size(0), -1).mean(dim=1)
-              else:
-                l1 = torch.zeros_like(recon_err)
-
-              lam = getattr(model, "lambda_sparsity", 1e-3)
-              total = recon_err + lam * l1
-              score_normal = -total
-
-              # CAE → recon + contractive penalty (placeholder se non implementato)
-            elif model_name == "cae":
-              jac = torch.zeros_like(recon_err)  # TODO: vero Jacobian se vuoi match perfetto
-              lam = getattr(model, "lambda_contractive", 1e-3)
-              total = recon_err + lam * jac
-              score_normal = -total
-
-# labels: 1 = normal, 0 = anomaly
-            y_true = (labels == normal_class).long()
-
-            all_scores.extend(score_normal.detach().cpu().numpy())
-            all_labels.extend(y_true.detach().cpu().numpy())
-            y_true = (labels == normal_class).long()
-
-    scores = np.array(all_scores)
-    y_true = np.array(all_ytrue)
-
+    scores = np.concatenate(all_scores, axis=0)
+    y_true = np.concatenate(all_ytrue, axis=0)
 
     roc_auc = roc_auc_score(y_true, scores)
     ap = average_precision_score(y_true, scores)
@@ -400,318 +370,174 @@ def evaluate_model(
     # threshold on "normal score": pred_normal = 1 if score >= thr
     best_f1 = 0.0
     for thr in np.percentile(scores, np.linspace(0, 100, 100)):
-        pred = (scores >= thr).astype(int)  # 1=normal
-        f1 = f1_score(y_true, pred, zero_division=0)
-        best_f1 = max(best_f1, f1)
+        pred = (scores >= thr).astype(int)
+        best_f1 = max(best_f1, f1_score(y_true, pred, zero_division=0))
 
-    return {'roc_auc': roc_auc, 'ap': ap, 'f1': best_f1, 'scores': scores, 'labels': y_true}
+    return {"roc_auc": float(roc_auc), "ap": float(ap), "f1": float(best_f1)}
 
 
 def run_experiment(
     model_name: str,
     dataset: str,
-    epochs: int = 50,
-    batch_size: int = 128,
-    normal_class: int = 0,
-    save_dir: str = './checkpoints',
-    device: torch.device = DEVICE,
-    verbose: bool = True
+    epochs: int,
+    batch_size: int,
+    normal_class: int,
+    checkpoint_dir: str,
+    device: torch.device,
+    verbose: bool,
 ) -> Dict:
-    """
-    Run a complete experiment for one model.
-    
-    Args:
-        model_name: Name of the model
-        dataset: Dataset name ('mnist' or 'fashion_mnist')
-        epochs: Number of training epochs
-        batch_size: Batch size
-        normal_class: Normal class for anomaly detection
-        save_dir: Directory to save checkpoints
-        device: Device for training
-        verbose: Print progress
-        
-    Returns:
-        Experiment results
-    """
     print(f"\n{'='*60}")
-    print(f"Training {model_name.upper()} on {dataset.upper()}")
+    print(f"Training {model_name.upper()} on {dataset.upper()} | normal_class={normal_class}")
     print(f"{'='*60}")
-    
-    # Create model
+
     model = create_model(model_name)
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
-    
-    # Load data
+
     train_loader, test_loader = get_anomaly_detection_loaders(
         dataset_name=dataset,
         normal_class=normal_class,
-        batch_size=batch_size
+        batch_size=batch_size,
     )
-    
     print(f"Training samples: {len(train_loader.dataset)}")
     print(f"Test samples: {len(test_loader.dataset)}")
-    
-    # Train
-    lr = MODEL_CONFIGS.get(model_name, {}).get('learning_rate', 1e-3)
-    history = train_model(
-        model, model_name, train_loader,
-        epochs=epochs, lr=lr, device=device, verbose=verbose
-    )
-    
+
+    lr = float(MODEL_CONFIGS.get(model_name, {}).get("learning_rate", 1e-3))
+    history = train_model(model, model_name, train_loader, epochs, lr, device, verbose)
     print(f"\nTraining completed in {history['total_time']:.1f} seconds")
-    
-    # Evaluate
+
     results = evaluate_model(model, model_name, test_loader, normal_class, device)
-    
-    print(f"\nResults:")
+
+    print("\nResults:")
     print(f"  ROC-AUC: {results['roc_auc']:.4f}")
-    print(f"  AP: {results['ap']:.4f}")
-    print(f"  F1: {results['f1']:.4f}")
-    
-    # Compare with paper
-    expected = EXPECTED_RESULTS.get(dataset, {}).get(model_name)
-    if expected:
-        diff = results['roc_auc'] - expected
+    print(f"  AP:      {results['ap']:.4f}")
+    print(f"  F1:      {results['f1']:.4f}")
+
+    expected = EXPECTED_RESULTS.get(dataset, {}).get(model_name, None)
+    if isinstance(expected, (int, float)):
+        diff = results["roc_auc"] - float(expected)
         print(f"  Paper ROC-AUC: {expected:.2f} (diff: {diff:+.4f})")
-    
-    # Save checkpoint
+
+    # save checkpoint
+    save_dir = os.path.join(checkpoint_dir, dataset, f"nc{normal_class}")
     os.makedirs(save_dir, exist_ok=True)
-    checkpoint_path = os.path.join(save_dir, f'{model_name}_{dataset}.pt')
-    torch.save({
-        'model_state_dict': model.state_dict(),
-        'model_name': model_name,
-        'dataset': dataset,
-        'history': history,
-        'results': {k: v for k, v in results.items() if k not in ['scores', 'labels']}
-    }, checkpoint_path)
-    print(f"\nCheckpoint saved to {checkpoint_path}")
-    
-    return {
-        'model_name': model_name,
-        'dataset': dataset,
-        'history': history,
-        'results': results
-    }
+    ckpt_path = os.path.join(save_dir, f"{model_name}_{dataset}.pt")
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "model_name": model_name,
+            "dataset": dataset,
+            "normal_class": normal_class,
+            "history": history,
+            "results": results,
+        },
+        ckpt_path,
+    )
+    print(f"\nCheckpoint saved to {ckpt_path}")
+
+    return {"model_name": model_name, "dataset": dataset, "history": history, "results": results}
 
 
 def run_all_experiments(
     dataset: str,
-    models: Optional[List[str]] = None,
-    epochs: int = 50,
-    batch_size: int = 128,
-    normal_class: int = 0,
-    save_dir: str = './checkpoints',
-    results_dir: str = './results',
-    device: torch.device = DEVICE,
-    verbose: bool = True
+    models: List[str],
+    epochs: int,
+    batch_size: int,
+    normal_class: int,
+    checkpoint_dir: str,
+    results_dir: str,
+    device: torch.device,
+    verbose: bool,
 ) -> Dict:
-    """
-    Run experiments for multiple models.
-    
-    Args:
-        dataset: Dataset name
-        models: List of models to train (default: all)
-        epochs: Number of training epochs
-        batch_size: Batch size
-        normal_class: Normal class for anomaly detection
-        save_dir: Directory to save checkpoints
-        results_dir: Directory to save results
-        device: Device for training
-        verbose: Print progress
-        
-    Returns:
-        All experiment results
-    """
-    if models is None:
-        models = ALL_MODELS
-    
     print("\n" + "=" * 70)
     print("AUTO-ENCODER ANOMALY DETECTION - FULL EXPERIMENT")
     print("=" * 70)
     print(f"Dataset: {dataset}")
-    print(f"Models: {', '.join(models)}")
-    print(f"Epochs: {epochs}")
-    print(f"Device: {device}")
+    print(f"Models:  {', '.join(models)}")
+    print(f"Epochs:  {epochs}")
+    print(f"Device:  {device}")
     print("=" * 70)
-    
+
     all_results = {}
-    
-    for model_name in models:
+
+    for m in models:
         try:
-            result = run_experiment(
-                model_name, dataset, epochs, batch_size,
-                normal_class, save_dir, device, verbose
+            all_results[m] = run_experiment(
+                m, dataset, epochs, batch_size, normal_class,
+                checkpoint_dir, device, verbose
             )
-            all_results[model_name] = result
         except Exception as e:
-            print(f"\nError training {model_name}: {e}")
+            print(f"\nError training/evaluating {m}: {e}")
             import traceback
             traceback.print_exc()
-            continue
-    
-    # Print summary
+
+    # summary
     print("\n" + "=" * 70)
     print("RESULTS SUMMARY")
     print("=" * 70)
-    print(f"{'Model':<15} {'ROC-AUC':<12} {'AP':<12} {'F1':<12} {'Time (s)':<12}")
+    print(f"{'Model':<12} {'ROC-AUC':<10} {'AP':<10} {'F1':<10} {'Time(s)':<10}")
     print("-" * 70)
-    
-    for model_name, result in all_results.items():
-        r = result['results']
-        t = result['history']['total_time']
-        print(f"{model_name:<15} {r['roc_auc']:<12.4f} {r['ap']:<12.4f} {r['f1']:<12.4f} {t:<12.1f}")
-    
+    for m, r in all_results.items():
+        res = r["results"]
+        t = r["history"]["total_time"]
+        print(f"{m:<12} {res['roc_auc']:<10.4f} {res['ap']:<10.4f} {res['f1']:<10.4f} {t:<10.1f}")
     print("=" * 70)
-    
-    # Compare with paper
+
+    # compare with paper
     print("\nCOMPARISON WITH PAPER (Table 3)")
     print("-" * 70)
-    print(f"{'Model':<15} {'Our AUC':<12} {'Paper AUC':<12} {'Difference':<12}")
+    print(f"{'Model':<12} {'Our AUC':<10} {'Paper':<10} {'Diff':<10}")
     print("-" * 70)
-    
-    expected = EXPECTED_RESULTS.get(dataset, {})
-    for model_name, result in all_results.items():
-        our_auc = result['results']['roc_auc']
-        paper_auc = expected.get(model_name, 'N/A')
-        if isinstance(paper_auc, (int, float)):
-            diff = our_auc - paper_auc
-            print(f"{model_name:<15} {our_auc:<12.4f} {paper_auc:<12.2f} {diff:<+12.4f}")
+    exp = EXPECTED_RESULTS.get(dataset, {})
+    for m, r in all_results.items():
+        our = r["results"]["roc_auc"]
+        paper = exp.get(m, None)
+        if isinstance(paper, (int, float)):
+            diff = our - float(paper)
+            print(f"{m:<12} {our:<10.4f} {paper:<10.2f} {diff:<+10.4f}")
         else:
-            print(f"{model_name:<15} {our_auc:<12.4f} {'N/A':<12} {'N/A':<12}")
-    
-    print("=" * 70)
-    
-    # Save results
-    os.makedirs(results_dir, exist_ok=True)
-    
-    # Save as JSON
-    json_results = {}
-    for model_name, result in all_results.items():
-        json_results[model_name] = {
-            'roc_auc': float(result['results']['roc_auc']),
-            'ap': float(result['results']['ap']),
-            'f1': float(result['results']['f1']),
-            'training_time': float(result['history']['total_time'])
+            print(f"{m:<12} {our:<10.4f} {'N/A':<10} {'N/A':<10}")
+    print("-" * 70)
+
+    # save json
+    out_dir = os.path.join(results_dir, dataset, f"nc{normal_class}")
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, f"results_{dataset}.json")
+    json_out = {
+        m: {
+            "roc_auc": all_results[m]["results"]["roc_auc"],
+            "ap": all_results[m]["results"]["ap"],
+            "f1": all_results[m]["results"]["f1"],
+            "training_time": float(all_results[m]["history"]["total_time"]),
         }
-    
-    json_path = os.path.join(results_dir, f'results_{dataset}.json')
-    with open(json_path, 'w') as f:
-        json.dump(json_results, f, indent=2)
-    print(f"\nResults saved to {json_path}")
-    
+        for m in all_results.keys()
+    }
+    with open(out_path, "w") as f:
+        json.dump(json_out, f, indent=2)
+    print(f"\nResults saved to {out_path}")
+
     return all_results
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description='Auto-Encoder Anomaly Detection Study',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-    python main.py --dataset mnist --all
-    python main.py --dataset fashion_mnist --all
-    python main.py --dataset mnist --model vae --epochs 50
-    python main.py --dataset mnist --models vae beta_vae advae
-    python main.py --dataset mnist --all --quick
-        """
-    )
-    
-    parser.add_argument(
-        '--dataset',
-        type=str,
-        choices=['mnist', 'fashion_mnist'],
-        default='mnist',
-        help='Dataset to use (default: mnist)'
-    )
-    
-    parser.add_argument(
-        '--model',
-        type=str,
-        choices=ALL_MODELS,
-        help='Single model to train'
-    )
-    
-    parser.add_argument(
-        '--models',
-        type=str,
-        nargs='+',
-        choices=ALL_MODELS,
-        help='Multiple models to train'
-    )
-    
-    parser.add_argument(
-        '--all',
-        action='store_true',
-        help='Train all models'
-    )
-    
-    parser.add_argument(
-        '--epochs',
-        type=int,
-        default=50,
-        help='Number of training epochs (default: 50)'
-    )
-    
-    parser.add_argument(
-        '--batch_size',
-        type=int,
-        default=128,
-        help='Batch size (default: 128)'
-    )
-    
-    parser.add_argument(
-        '--normal_class',
-        type=int,
-        default=0,
-        help='Normal class for anomaly detection (default: 0)'
-    )
-    
-    parser.add_argument(
-        '--quick',
-        action='store_true',
-        help='Quick test run with reduced epochs (5)'
-    )
-    
-    parser.add_argument(
-        '--checkpoint_dir',
-        type=str,
-        default='./checkpoints',
-        help='Directory to save model checkpoints'
-    )
-    
-    parser.add_argument(
-        '--results_dir',
-        type=str,
-        default='./results',
-        help='Directory to save results'
-    )
-    
-    parser.add_argument(
-        '--no_cuda',
-        action='store_true',
-        help='Disable CUDA even if available'
-    )
-    
-    parser.add_argument(
-        '--quiet',
-        action='store_true',
-        help='Reduce output verbosity'
-    )
-    
+    parser = argparse.ArgumentParser(description="Auto-Encoder Anomaly Detection Study")
+    parser.add_argument("--dataset", choices=["mnist", "fashion_mnist"], default="mnist")
+    parser.add_argument("--model", choices=ALL_MODELS)
+    parser.add_argument("--models", nargs="+", choices=ALL_MODELS)
+    parser.add_argument("--all", action="store_true")
+    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--normal_class", type=int, default=0)
+    parser.add_argument("--quick", action="store_true")
+    parser.add_argument("--checkpoint_dir", type=str, default="./checkpoints")
+    parser.add_argument("--results_dir", type=str, default="./results")
+    parser.add_argument("--no_cuda", action="store_true")
+    parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
-    
-    # Set device
-    device = DEVICE
-    if args.no_cuda:
-        device = torch.device('cpu')
-    
-    # Set epochs
-    epochs = args.epochs
-    if args.quick:
-        epochs = 5
-        print("Quick mode: using 5 epochs")
-    
-    # Determine which models to train
+
+    device = torch.device("cpu") if args.no_cuda else DEVICE
+    epochs = 5 if args.quick else args.epochs
+    verbose = not args.quiet
+
     if args.all:
         models = ALL_MODELS
     elif args.models:
@@ -719,21 +545,18 @@ Examples:
     elif args.model:
         models = [args.model]
     else:
-        parser.print_help()
-        print("\nError: Please specify --model, --models, or --all")
-        return
-    
-    # Run experiments
+        raise SystemExit("Specify --model or --models or --all")
+
     run_all_experiments(
         dataset=args.dataset,
         models=models,
         epochs=epochs,
         batch_size=args.batch_size,
         normal_class=args.normal_class,
-        save_dir=args.checkpoint_dir,
+        checkpoint_dir=args.checkpoint_dir,
         results_dir=args.results_dir,
         device=device,
-        verbose=not args.quiet
+        verbose=verbose,
     )
 
 
