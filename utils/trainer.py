@@ -191,6 +191,10 @@ class AnomalyTrainer:
         
         for epoch in range(epochs):
             # Training
+            if self.model_name == "dae":
+                p0, p1 = 0.20, 0.52
+                t = epoch / max(1, (num_epochs - 1))
+                self.model.noise_factor = p0 + (p1 - p0) * t
             if self.model_name in ['dae', 'sae', 'cae', 'rda']:
                 train_loss = self.train_epoch_standard(train_loader, optimizer)
             elif self.model_name in ['vae', 'beta_vae', 'cvae', 'iwae', 'pae']:
