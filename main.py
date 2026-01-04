@@ -337,7 +337,8 @@ def evaluate_model(
             recon_flat = recon.view(batch_size, -1)
 
             # reconstruction error (per-sample)
-            recon_err = torch.mean((data_flat - recon_flat) ** 2, dim=1)
+            score = self.compute_score_per_sample(self.model_name, outputs, data, recon)
+
 
             # ========== PAPER-ALIGNED SCORE ==========
             # default: AE-style (normal positivo)

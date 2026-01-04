@@ -25,7 +25,70 @@ class AnomalyTrainer:
     Trainer class for auto-encoder based anomaly detection.
     Handles training, evaluation, and metric computation.
     """
-    
+    def compute_score_per_sample(self, model_name: str, outputs, x, recon):
+    """
+    Ritorna anomaly_score (più alto = più anomalo) PER SAMPLE,
+    coerente con la loss del paper: recon + penalty/KL.
+    """
+      bs = x.size(0)
+      x_flat = x.view(bs, -1)
+      r_flat = recon.view(bs, -1)
+
+      recon_loss = torch.mean((x_flat - r_flat) ** 2, dim=1)  # per-sample
+
+    # default: solo recon
+      score = recon_loss
+
+    # SAE / CAE: se il modello ti ritorna già la penalty nel forward, sommala.
+    # Nel tuo train_epoch_standard: loss, recon, _ = self.model(data) per dae/sae/cae :contentReference[oaicite:7]{index=7}
+    # Quindi spesso quel "_" è un termine extra. Proviamo a sfruttarlo se ha shape [bs].
+      if model_name in ["sae", "cae"]:
+        extra = None
+        if isinstance(outputs, tuple) and len(outputs) >= 3:
+            extra = outputs[2]
+
+        if torch.is_tensor(extra):
+            if extra.dim() == 0:
+                # è scalare: non per-sample -> lo ignoriamo nello score per sample
+                pass
+            elif extra.shape[0] == bs:
+                score = recon_loss + extra
+
+    # VAE / beta-VAE: usa recon + KL (o beta*KL) se presente nell'output dict/tuple
+      if model_name in ["vae", "beta_vae"]:
+        kl = None
+        beta = self.config.get("beta", 1.0)
+
+        if isinstance(outputs, dict):
+            # nomi più comuni
+            kl = outputs.get("kl", outputs.get("kl_loss", None))
+        elif isinstance(outputs, tuple) and len(outputs) >= 4:
+            # es: recon, mu, logvar, ...
+            # se non hai kl già, puoi calcolarlo da mu/logvar (sotto)
+            pass
+
+        if kl is None:
+            # prova a calcolare KL da mu/logvar se disponibili
+            mu, logvar = None, None
+            if isinstance(outputs, dict):
+                mu = outputs.get("mu", None)
+                logvar = outputs.get("logvar", None)
+            elif isinstance(outputs, tuple) and len(outputs) >= 4:
+                # dipende dall'ordine del tuo VAE
+                mu, logvar = outputs[2], outputs[3]
+
+            if (mu is not None) and (logvar is not None):
+                # KL per sample: -0.5 * sum(1 + logvar - mu^2 - exp(logvar))
+                kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
+
+        if torch.is_tensor(kl) and kl.shape[0] == bs:
+            if model_name == "beta_vae":
+                score = recon_loss + beta * kl
+            else:
+                score = recon_loss + kl
+
+    return score
+
     def __init__(self, model, model_name, device=DEVICE):
         self.model = model.to(device)
         self.model_name = model_name
